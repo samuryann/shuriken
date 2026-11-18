@@ -7,7 +7,16 @@ A shuriken is small and sharp, and you carry several. This repo is a set of sing
 
 Looking for Claude Code add-ons? See the sister repo, [ronin-toolkit](https://github.com/samuryann/ronin-toolkit).
 
-Licence: MIT with Commons Clause. See [LICENSE](LICENSE).
+## Licence
+
+MIT with Commons Clause. The full text is in [LICENSE](LICENSE). In plain terms:
+
+- **Free to use**, including at work and for your own clients.
+- **Free to change and share.** Keep the licence notice with any copy.
+- **Not for sale.** You can't sell these tools, or charge for a product or service that is mostly these tools.
+- **No warranty. You use them at your own risk.** You are responsible for what they do on your systems. Test first and take a snapshot or backup before you run anything.
+
+The plain-terms list is a summary. If it and the LICENSE file disagree, the LICENSE file wins.
 
 ## Tools
 
