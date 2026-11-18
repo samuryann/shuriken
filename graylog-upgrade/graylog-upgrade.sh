@@ -52,6 +52,10 @@ Optional extras:
   --help      Show this help.
 Upgrades graylog-server (and graylog-datanode when installed) one minor at a time, with a
 simulation, a prompt and a verification pause for every hop.
+Terms: the first run of each version asks you to type "accept". It is remembered in
+  /root/.config/shuriken-graylog-upgrade/accepted
+With no terminal on stdin and stdout, set SHURIKEN_ACCEPT_TERMS=1 to accept the terms.
+On a terminal of at least 80x30 a header and status bar stay pinned at the top.
 EOF
 }
 
@@ -70,6 +74,9 @@ done
 
 # ---- Colour: only on a real terminal (NO_COLOR or TERM=dumb switch it off). The log copy is always plain text.
 VERSION="2026.11"
+BRAND=shuriken
+LICENSE_REF="the LICENSE file at https://github.com/samuryann/shuriken"
+OUT_TTY=0; [[ -t 1 ]] && OUT_TTY=1   # real terminal on stdout, noted before the log tee replaces it
 C_RST=""; C_BOLD=""; C_DIM=""; C_RED=""; C_GRN=""; C_YEL=""; C_CYN=""
 if [[ -t 1 && -z ${NO_COLOR:-} && ${TERM:-dumb} != dumb ]]; then
   if command -v tput >/dev/null 2>&1 && (( $(tput colors 2>/dev/null || echo 0) >= 8 )); then
@@ -115,6 +122,121 @@ banner() {
  \___/ |_|   \___||_|_\/_/ \_\|___/ |___|
 EOF
   printf '%sshuriken%s  |  Graylog upgrade tool  |  v%s\n' "$C_BOLD" "$C_RST" "$VERSION"
+}
+
+# ---- Acceptance gate: first thing after the banner. Remembered per VERSION; log gets one line, not the text.
+TERMS_DIR=/root/.config/$BRAND-graylog-upgrade
+TERMS_FILE=$TERMS_DIR/accepted
+terms_gate() {
+  local envv=${BRAND^^}_ACCEPT_TERMS ans line when
+  if [[ -r $TERMS_FILE ]] && line=$(head -n 1 "$TERMS_FILE" 2>/dev/null) && [[ $line == "version=$VERSION "* ]]; then
+    when=${line##*date=}
+    say "Terms accepted on ${when%%T*}."
+    printf 'TERMS: already accepted (version %s, %s)\n' "$VERSION" "$when" >>"$LOG"
+    return 0
+  fi
+  say ""
+  say "${C_BOLD}Terms of use${C_RST} (please read)"
+  say "  - Free to use and modify under the MIT licence with the Commons Clause. Not for sale."
+  say "  - Provided as is, with no warranty of any kind."
+  say "  - You are responsible for what it does on your systems."
+  say "  - Take a VM snapshot or a backup first."
+  say "  - It changes packages (graylog-server, graylog-datanode and the Graylog repo)"
+  say "    and it restarts services."
+  say "  - Full licence text: $LICENSE_REF."
+  say ""
+  if (( ! OUT_TTY )) && [[ ! -t 0 ]]; then   # no terminal on stdin or stdout: explicit opt-in only
+    if [[ ${!envv:-} == 1 ]]; then
+      say "Terms accepted through $envv=1."
+      printf 'TERMS: accepted via %s=1 (version %s)\n' "$envv" "$VERSION" >>"$LOG"
+      return 0
+    fi
+    say "No terminal. Set $envv=1 to accept the terms and run non-interactively."
+    exit 1
+  fi
+  printf '%sType "accept" to continue (anything else exits):%s ' "$C_BOLD" "$C_RST"
+  read -r ans </dev/tty || die "No terminal input."
+  ans=${ans,,}; ans=${ans//[[:space:]]/}
+  if [[ $ans != accept ]]; then
+    printf 'TERMS: not accepted (version %s)\n' "$VERSION" >>"$LOG"
+    say "Not accepted. Nothing was changed."; exit 0
+  fi
+  printf 'TERMS: accepted (version %s)\n' "$VERSION" >>"$LOG"
+  if ! ( umask 077; mkdir -p "$TERMS_DIR" && printf 'version=%s date=%s\n' "$VERSION" "$(date -u +%FT%TZ)" >"$TERMS_FILE" ) 2>/dev/null; then
+    warn "Could not save the acceptance in $TERMS_DIR. You will be asked again next run."
+  fi
+}
+
+# ---- Pinned header: scroll region below a banner or title plus a status bar. Display only.
+# Needs a tty on stdout, TERM not dumb, 80x30 or larger. All writes go to /dev/tty, never through the log tee.
+# Redraws happen only at fixed points (set_phase, status_refresh), never in the background and never at a prompt.
+PIN=0; PIN_ROWS=0; PIN_COLS=0; HDR_H=0; PHASE=Terms
+pin_w() { { printf '%s' "$1" >/dev/tty; } 2>/dev/null || true; }
+pin_size() { # sets PIN_ROWS and PIN_COLS; fails when the terminal is too small
+  local sz
+  sz=$(stty size </dev/tty 2>/dev/null) || return 1
+  PIN_ROWS=${sz% *}; PIN_COLS=${sz#* }
+  [[ $PIN_ROWS =~ ^[0-9]+$ && $PIN_COLS =~ ^[0-9]+$ ]] || return 1
+  (( PIN_ROWS >= 30 && PIN_COLS >= 80 ))
+}
+pin_head() { # escape string that draws the title rows and the rule (status rows are drawn by status_refresh)
+  local buf="" r=1 l
+  if (( HDR_H == 12 )); then
+    while IFS= read -r l; do buf+="${ESC}[${r};1H${ESC}[2K$l"; r=$((r + 1)); done < <(banner)
+  else
+    buf+="${ESC}[1;1H${ESC}[2K${C_BOLD}${BRAND}${C_RST}  |  Graylog upgrade  |  v${VERSION}"
+    buf+="${ESC}[2;1H${ESC}[2K${C_DIM}Log: ${LOG}${C_RST}"
+  fi
+  buf+="${ESC}[$((HDR_H - 2));1H${ESC}[2K${ESC}[$((HDR_H - 1));1H${ESC}[2K"
+  buf+="${ESC}[${HDR_H};1H${ESC}[2K${C_DIM}$(printf '%*s' "$PIN_COLS" '' | tr ' ' '-')${C_RST}"
+  printf '%s' "$buf"
+}
+pin_apply() { # set the scroll region below the header, draw the header, keep the cursor where it was
+  HDR_H=5; (( PIN_ROWS >= 45 )) && HDR_H=12
+  pin_w "${ESC}7${ESC}[?7l${ESC}[$((HDR_H + 1));${PIN_ROWS}r$(pin_head)${ESC}[?7h${ESC}8"
+  status_refresh
+}
+pin_init() { # returns 1 (nothing done) when the header cannot be pinned
+  (( OUT_TTY )) && [[ ${TERM:-dumb} != dumb ]] && pin_size || return 1
+  PIN=1
+  pin_w "${ESC}[2J${ESC}[H"
+  pin_apply
+  pin_w "${ESC}[$((HDR_H + 1));1H"
+  return 0
+}
+pin_svc() { # label unit
+  if systemctl is-active --quiet "$2" 2>/dev/null; then printf '%s %sOK%s' "$1" "$C_GRN" "$C_RST"
+  else printf '%s %sDOWN%s' "$1" "$C_RED" "$C_RST"; fi
+}
+status_refresh() { # redraw the two status rows without moving the cursor
+  (( PIN )) || return 0
+  local host sv dv hl hold s1 s2 dsvc
+  host=$(hostname -s 2>/dev/null) || host=host; host=${host:0:14}
+  if [[ $PHASE == Terms ]]; then
+    s1="Host $host  |  v$VERSION"; s2="Phase: Terms (acceptance required)"
+  else
+    sv=$(pkgver graylog-server); sv=${sv#*:}; sv=${sv%%-*}
+    dv=$(pkgver graylog-datanode); dv=${dv#*:}; dv=${dv%%-*}
+    if [[ -z $HEALTH_URL ]]; then hl="${C_DIM}n/a${C_RST}"
+    elif curl -s --max-time 2 "${CURL_K[@]}" "$HEALTH_URL" 2>/dev/null | grep -q ALIVE; then hl="${C_GRN}ALIVE${C_RST}"
+    else hl="${C_RED}DEAD${C_RST}"; fi
+    if apt-mark showhold 2>/dev/null | grep -qx graylog-server; then hold=held; else hold="${C_YEL}NOT held${C_RST}"; fi
+    if [[ -n $dv ]]; then dsvc=$(pin_svc datanode graylog-datanode); else dsvc="datanode ${C_DIM}n/a${C_RST}"; fi
+    s1="Host $host | Server ${sv:--} | Datanode ${dv:--} | Health $hl"
+    s2="$(pin_svc mongod mongod) | $(pin_svc server graylog-server) | $dsvc | Phase: $PHASE | Hold: $hold"
+  fi
+  pin_w "${ESC}7${ESC}[?7l${ESC}[$((HDR_H - 2));1H${ESC}[2K $s1${C_RST}${ESC}[$((HDR_H - 1));1H${ESC}[2K $s2${C_RST}${ESC}[?7h${ESC}8"
+  return 0
+}
+set_phase() { PHASE=$1; status_refresh; }
+pin_winch() { # SIGWINCH: recompute the size, reset the region, redraw
+  (( PIN )) || return 0
+  if pin_size; then pin_apply; else PIN=0; pin_w "${ESC}[r${ESC}[?7h"; fi
+}
+pin_restore() { # full scroll region back, cursor to the bottom, cursor visible. Safe to call twice.
+  (( PIN )) || return 0
+  trap '' WINCH; PIN=0
+  pin_w "${ESC}[r${ESC}[?7h${ESC}[999;1H${ESC}[?25h"
 }
 
 # Run a command, or only print it in dry-run mode.
@@ -164,6 +286,7 @@ on_exit() {
   trap '' PIPE HUP INT TERM
   say() { out "$@"; }; warn() { out "$(f_warn "$*")"; }; hdr() { out ""; out "$(f_hdr "$*")"; }
   rehold   # FIRST: the holds matter more than any message
+  pin_restore   # then give the terminal its full scroll region back, before any message
   if (( SERVER_STOPPED )) && [[ $(systemctl is-active graylog-server 2>/dev/null) != active ]]; then
     say "graylog-server was stopped by this tool and is not running. Trying to start it (installed: $(pkgver graylog-server))."
     timeout 120 systemctl start graylog-server >>"$LOG" 2>&1 || true
@@ -186,6 +309,7 @@ trap on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 129' HUP
 trap 'exit 143' TERM
+trap pin_winch WINCH
 trap '' PIPE   # a dead tee must not kill us before on_exit has re-held the packages
 
 print_summary() { # exit code; only after a real (non-preview) walkthrough started
@@ -263,6 +387,7 @@ wait_stage() {
     [[ $hook != - ]] && "$hook"
     ask "Keep waiting for $label?" Y "recommended unless the log shows a clear failure" || die "Gave up waiting for $label."
   done
+  status_refresh
 }
 
 preflight_hint() {
@@ -435,6 +560,7 @@ swap_repo() { # minor
 
 do_hop() { # idx total minor
   local idx=$1 total=$2 minor=$3 sver dver="" row mmin mmax
+  if (( DRY )); then set_phase "Preview $idx/$total to $minor"; else set_phase "Hop $idx/$total to $minor"; fi
   if [[ $minor == "$CUR_MINOR" ]]; then hdr "Hop $idx of $total: patch update within $minor"; else hdr "Hop $idx of $total: to $minor"; hop_warn "$minor"; fi
   info "Expect a log gap of about 5 to 10 minutes (UDP syslog is not buffered)."
   if row=$(hop_row "$minor"); then
@@ -461,6 +587,7 @@ do_hop() { # idx total minor
     say "graylog-server already at $sver, not reinstalling."
     REPO_PENDING=""
     must systemctl start graylog-server
+    status_refresh
     wait_stage 300 "lbstatus ALIVE" "$SLOG" - alive
   else
     # Simulate and confirm BEFORE stopping the server, so a refusal leaves it running.
@@ -476,6 +603,7 @@ do_hop() { # idx total minor
     SLOG_MARK=$(log_mark "$SLOG"); SRV_START_SECS=$SECONDS; FALLBACK_WARNED=0
     must systemctl start graylog-server
     SERVER_STOPPED=0
+    status_refresh
     local hook=-; [[ $minor == 7.0 ]] && hook=preflight_hint
     wait_stage 600 "graylog-server up and running + lbstatus ALIVE" "$SLOG" "$hook" server_ready
   fi
@@ -485,6 +613,7 @@ do_hop() { # idx total minor
     install_pkg graylog-datanode "$dver"
     must systemctl daemon-reload
     must systemctl restart graylog-datanode
+    status_refresh
     wait_stage 300 "Data Node ports 8999/9200/9300" "$DLOG" - datanode_ready
   else
     info "Self-managed search backend: not touched. Confirm it is supported for Graylog $minor."
@@ -724,7 +853,9 @@ walkthrough() {
 # ---- Main: scan screen
 build_pkgs() { PKGS=(graylog-server); HAS_DN=0; [[ -n $(pkgver graylog-datanode) ]] && { HAS_DN=1; PKGS+=(graylog-datanode); }; return 0; }
 
-banner
+pin_init || banner
+terms_gate
+set_phase Start
 hdr "shuriken Graylog upgrade $(date '+%F %T')"
 if ! in_mux; then
   warn "Not running inside tmux or screen. If this terminal closes, the upgrade can be interrupted halfway."
@@ -737,6 +868,7 @@ SVER=$(pkgver graylog-server); DVER=$(pkgver graylog-datanode)
 START_SVER=$SVER; START_DVER=$DVER
 CUR=${SVER#*:}; CUR=${CUR%%-*}; CUR_MINOR=${CUR%.*}
 DM=${DVER#*:}; DM=${DM%%-*}; DM=${DM%.*}
+set_phase Scan
 hdr "Scan"
 # shellcheck source=/dev/null
 say "OS:            $(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-unknown}")"
@@ -784,11 +916,12 @@ if (( PREVIEW_ONLY )); then
   build_plan; show_path
   check_plan || exit 1
   (( ${#PLAN[@]} )) || { say "Nothing to do: $SVER is at or past target $TARGET."; exit 0; }
-  walkthrough; ok "Preview finished. Nothing was changed."; exit 0
+  set_phase Preview; walkthrough; ok "Preview finished. Nothing was changed."; set_phase Done; exit 0
 fi
 
 while :; do
   build_plan; show_path
+  set_phase Menu
   say ""
   if (( ${#PLAN[@]} )); then say "Plan: $(printf '%s ' "${PLAN[@]}")"; else say "Nothing to do for target $TARGET ($SVER is at or past it). Use 3 to pick another target."; fi
   say "  ${C_YEL}[1]${C_RST} Upgrade along this path (recommended after a Preview)"
@@ -802,9 +935,10 @@ while :; do
     1|2) if (( ! ${#PLAN[@]} )); then say "Nothing to do for this target."; continue; fi
          check_plan || continue
          if [[ $ans == 2 ]]; then
+           set_phase Preview
            if ( DRY=1; walkthrough ); then ok "Preview finished. Nothing was changed. Back at the menu."
            else say "Preview stopped (see the reason above). Nothing was changed. Back at the menu."; fi
-         else STARTED_REAL=1; walkthrough; exit 0; fi ;;
+         else STARTED_REAL=1; walkthrough; set_phase Done; exit 0; fi ;;
     3) choose_target ;;
     4) say "Quit. Nothing was changed."; exit 0 ;;
     *) say "Choose 1, 2, 3 or 4." ;;

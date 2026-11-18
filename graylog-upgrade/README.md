@@ -35,6 +35,16 @@ sudo bash graylog-upgrade.sh
 
 No arguments are needed. The log is written to `/var/log/shuriken-graylog-upgrade-<date>.log`.
 
+## Terms prompt
+
+The first screen shows a short notice (MIT with Commons Clause, no warranty, you are responsible, take a snapshot first). Type `accept` to continue. Anything else exits and changes nothing.
+
+The answer is remembered for that script version in `/root/.config/shuriken-graylog-upgrade/accepted`. A new version asks again. With no terminal on stdin and stdout, the script refuses to run unless `SHURIKEN_ACCEPT_TERMS=1` is set.
+
+## Pinned header
+
+On a terminal of at least 80 columns by 30 rows, the banner (or a two-line title on terminals under 45 rows) and a status bar stay at the top while output scrolls below. The bar shows host, graylog-server and datanode versions, service state, Health, current phase and hold state. It is redrawn at phase changes and after service starts, restarts and waits. It is display only and is not written to the log. On smaller terminals, or with `TERM=dumb` or output redirected, the banner prints once as before.
+
 ## What it never touches
 
 - MongoDB
