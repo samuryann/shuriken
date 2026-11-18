@@ -132,7 +132,7 @@ ask() {
   if [[ $def == Y ]]; then hint="[Y/n]"; else hint="[y/N]"; fi
   [[ -n $rec ]] && hint+=" ($rec)"
   while true; do
-    printf '%s%s%s %s ' "$C_BOLD" "$q" "$C_RST" "$hint" >/dev/tty
+    printf '%s%s%s %s ' "$C_BOLD" "$q" "$C_RST" "$hint"
     read -r ans </dev/tty || die "No terminal input."
     ans=${ans:-$def}
     case ${ans,,} in y|yes) rc=0 ;; n|no) rc=1 ;; *) continue ;; esac
@@ -625,7 +625,7 @@ check_plan() { # never skip a minor silently
 choose_target() {
   local ans st
   while :; do
-    printf '%sTarget minor%s [%s%s%s, recommended]: ' "$C_BOLD" "$C_RST" "$C_GRN" "$RECOMMENDED" "$C_RST" >/dev/tty
+    printf '%sTarget minor%s [%s%s%s, recommended]: ' "$C_BOLD" "$C_RST" "$C_GRN" "$RECOMMENDED" "$C_RST"
     read -r ans </dev/tty || die "No terminal input."
     ans=${ans:-$RECOMMENDED}
     printf 'PROMPT: target -> %s\n' "$ans" >>"$LOG"
@@ -689,7 +689,7 @@ health_gate() {
   (( ${#reasons[@]} )) || { ok "Health gate: ok (lbstatus ALIVE, services active, $((free_kb / 1024)) MB free on /)."; return 0; }
   for r in "${reasons[@]}"; do warn "Health gate: $r"; done
   if (( DRY )); then dim "[preview] a real run would stop here unless you type yes."; return 0; fi
-  printf '%sType yes to continue anyway, anything else stops:%s ' "$C_BOLD" "$C_RST" >/dev/tty
+  printf '%sType yes to continue anyway, anything else stops:%s ' "$C_BOLD" "$C_RST"
   read -r ans </dev/tty || die "No terminal input."
   printf 'PROMPT: health gate override -> %s\n' "$ans" >>"$LOG"
   [[ $ans == yes ]] || die "Stopped by the health gate."
@@ -795,7 +795,7 @@ while :; do
   say "  ${C_BOLD}${C_GRN}[2] Preview only (default: shows every step, changes nothing)${C_RST}"
   say "  [3] Change target"
   say "  [4] Quit"
-  printf '%sChoose 1-4%s [default %s2 = Preview%s, the safer first choice]: ' "$C_BOLD" "$C_RST" "$C_GRN" "$C_RST" >/dev/tty
+  printf '%sChoose 1-4%s [default %s2 = Preview%s, the safer first choice]: ' "$C_BOLD" "$C_RST" "$C_GRN" "$C_RST"
   read -r ans </dev/tty || die "No terminal input."
   ans=${ans:-2}; printf 'PROMPT: menu -> %s\n' "$ans" >>"$LOG"
   case $ans in
