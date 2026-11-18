@@ -43,7 +43,9 @@ The answer is remembered for that script version in `/root/.config/shuriken-gray
 
 ## Pinned header
 
-On a terminal of at least 80 columns by 30 rows, the banner (or a two-line title on terminals under 45 rows) and a status bar stay at the top while output scrolls below. The bar shows host, graylog-server and datanode versions, service state, Health, current phase and hold state. It is redrawn at phase changes and after service starts, restarts and waits. It is display only and is not written to the log. On smaller terminals, or with `TERM=dumb` or output redirected, the banner prints once as before.
+On a terminal of at least 48 columns by 22 rows, the full banner and a status bar stay pinned at the top while output scrolls below. Terminals down to 40 by 15 get a two-line title instead. The bar shows host, graylog-server and datanode versions, service state, Health, current phase and hold state. It is redrawn at phase changes and after service starts, restarts and waits. It is display only and is not written to the log. Smaller terminals, `TERM=dumb` or redirected output get the banner once, as before.
+
+While the tool is busy, keystrokes are not echoed and typeahead is dropped before each prompt. Ctrl+C still works, and your terminal settings are restored on exit.
 
 ## What it never touches
 

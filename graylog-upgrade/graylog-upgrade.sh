@@ -55,7 +55,7 @@ simulation, a prompt and a verification pause for every hop.
 Terms: the first run of each version asks you to type "accept". It is remembered in
   /root/.config/shuriken-graylog-upgrade/accepted
 With no terminal on stdin and stdout, set SHURIKEN_ACCEPT_TERMS=1 to accept the terms.
-On a terminal of at least 80x30 a header and status bar stay pinned at the top.
+On a terminal of at least 48x22 the banner and a status bar stay pinned at the top.
 EOF
 }
 
@@ -155,7 +155,7 @@ terms_gate() {
     exit 1
   fi
   printf '%sType "accept" to continue (anything else exits):%s ' "$C_BOLD" "$C_RST"
-  read -r ans </dev/tty || die "No terminal input."
+  read_tty ans || die "No terminal input."
   ans=${ans,,}; ans=${ans//[[:space:]]/}
   if [[ $ans != accept ]]; then
     printf 'TERMS: not accepted (version %s)\n' "$VERSION" >>"$LOG"
@@ -168,8 +168,19 @@ terms_gate() {
 }
 
 # ---- Pinned header: scroll region below a banner or title plus a status bar. Display only.
-# Needs a tty on stdout, TERM not dumb, 80x30 or larger. All writes go to /dev/tty, never through the log tee.
+# Needs a tty on stdout, TERM not dumb, 48x22 or larger for the full banner (40x15 for the compact title). All writes go to /dev/tty, never through the log tee.
 # Redraws happen only at fixed points (set_phase, status_refresh), never in the background and never at a prompt.
+STTY_SAVED=""
+tty_quiet() { [[ -n $STTY_SAVED ]] && { stty -echo -icanon </dev/tty 2>/dev/null || true; }; return 0; }   # keep isig: Ctrl+C works
+tty_normal() { [[ -n $STTY_SAVED ]] && { stty "$STTY_SAVED" </dev/tty 2>/dev/null || true; }; return 0; }
+read_tty() { # varname: drop typeahead, restore echo, read one answer from /dev/tty, go quiet again
+  local rc _junk
+  while read -r -s -t 0.01 -n 10000 _junk </dev/tty 2>/dev/null; do :; done
+  tty_normal
+  read -r "$1" </dev/tty; rc=$?
+  tty_quiet
+  return $rc
+}
 PIN=0; PIN_ROWS=0; PIN_COLS=0; HDR_H=0; PHASE=Terms
 pin_w() { { printf '%s' "$1" >/dev/tty; } 2>/dev/null || true; }
 pin_size() { # sets PIN_ROWS and PIN_COLS; fails when the terminal is too small
@@ -177,7 +188,10 @@ pin_size() { # sets PIN_ROWS and PIN_COLS; fails when the terminal is too small
   sz=$(stty size </dev/tty 2>/dev/null) || return 1
   PIN_ROWS=${sz% *}; PIN_COLS=${sz#* }
   [[ $PIN_ROWS =~ ^[0-9]+$ && $PIN_COLS =~ ^[0-9]+$ ]] || return 1
-  (( PIN_ROWS >= 30 && PIN_COLS >= 80 ))
+  # Full banner header (12 rows) needs 10 scroll rows below it and the banner width; else the compact 5 row title.
+  if (( PIN_ROWS >= 22 && PIN_COLS >= 48 )); then HDR_H=12
+  elif (( PIN_ROWS >= 15 && PIN_COLS >= 40 )); then HDR_H=5
+  else return 1; fi
 }
 pin_head() { # escape string that draws the title rows and the rule (status rows are drawn by status_refresh)
   local buf="" r=1 l
@@ -192,7 +206,6 @@ pin_head() { # escape string that draws the title rows and the rule (status rows
   printf '%s' "$buf"
 }
 pin_apply() { # set the scroll region below the header, draw the header, keep the cursor where it was
-  HDR_H=5; (( PIN_ROWS >= 45 )) && HDR_H=12
   pin_w "${ESC}7${ESC}[?7l${ESC}[$((HDR_H + 1));${PIN_ROWS}r$(pin_head)${ESC}[?7h${ESC}8"
   status_refresh
 }
@@ -231,7 +244,12 @@ status_refresh() { # redraw the two status rows without moving the cursor
 set_phase() { PHASE=$1; status_refresh; }
 pin_winch() { # SIGWINCH: recompute the size, reset the region, redraw
   (( PIN )) || return 0
-  if pin_size; then pin_apply; else PIN=0; pin_w "${ESC}[r${ESC}[?7h"; fi
+  local old=$HDR_H r blank=""
+  if pin_size; then
+    for ((r = HDR_H + 1; r <= old; r++)); do blank+="${ESC}[${r};1H${ESC}[2K"; done   # header got shorter: wipe its old rows
+    [[ -n $blank ]] && pin_w "${ESC}7${blank}${ESC}8"
+    pin_apply
+  else PIN=0; pin_w "${ESC}[r${ESC}[?7h"; fi
 }
 pin_restore() { # full scroll region back, cursor to the bottom, cursor visible. Safe to call twice.
   (( PIN )) || return 0
@@ -255,7 +273,7 @@ ask() {
   [[ -n $rec ]] && hint+=" ($rec)"
   while true; do
     printf '%s%s%s %s ' "$C_BOLD" "$q" "$C_RST" "$hint"
-    read -r ans </dev/tty || die "No terminal input."
+    read_tty ans || die "No terminal input."
     ans=${ans:-$def}
     case ${ans,,} in y|yes) rc=0 ;; n|no) rc=1 ;; *) continue ;; esac
     printf 'PROMPT: %s %s -> %s\n' "$q" "$hint" "$ans" >>"$LOG"
@@ -286,6 +304,7 @@ on_exit() {
   trap '' PIPE HUP INT TERM
   say() { out "$@"; }; warn() { out "$(f_warn "$*")"; }; hdr() { out ""; out "$(f_hdr "$*")"; }
   rehold   # FIRST: the holds matter more than any message
+  tty_normal   # saved stty settings back (guarded, never fatal)
   pin_restore   # then give the terminal its full scroll region back, before any message
   if (( SERVER_STOPPED )) && [[ $(systemctl is-active graylog-server 2>/dev/null) != active ]]; then
     say "graylog-server was stopped by this tool and is not running. Trying to start it (installed: $(pkgver graylog-server))."
@@ -755,7 +774,7 @@ choose_target() {
   local ans st
   while :; do
     printf '%sTarget minor%s [%s%s%s, recommended]: ' "$C_BOLD" "$C_RST" "$C_GRN" "$RECOMMENDED" "$C_RST"
-    read -r ans </dev/tty || die "No terminal input."
+    read_tty ans || die "No terminal input."
     ans=${ans:-$RECOMMENDED}
     printf 'PROMPT: target -> %s\n' "$ans" >>"$LOG"
     valid_target "$ans" || { say "Not available or not newer than $CUR_MINOR. Pick a minor from the list."; continue; }
@@ -819,7 +838,7 @@ health_gate() {
   for r in "${reasons[@]}"; do warn "Health gate: $r"; done
   if (( DRY )); then dim "[preview] a real run would stop here unless you type yes."; return 0; fi
   printf '%sType yes to continue anyway, anything else stops:%s ' "$C_BOLD" "$C_RST"
-  read -r ans </dev/tty || die "No terminal input."
+  read_tty ans || die "No terminal input."
   printf 'PROMPT: health gate override -> %s\n' "$ans" >>"$LOG"
   [[ $ans == yes ]] || die "Stopped by the health gate."
 }
@@ -850,9 +869,27 @@ walkthrough() {
   done
 }
 
+# One line per mount: /, /var, and the MongoDB and Graylog data paths when they are on other mounts.
+disk_free() {
+  local p m a u line seen=" " lead="Disk free:     " cj dbp
+  cj=$(grep -E '^[[:space:]]*message_journal_dir[[:space:]]*=' "$CONF" 2>/dev/null | tail -n 1 | cut -d= -f2- | tr -d '[:space:]')
+  dbp=$(awk '/^[[:space:]]*dbPath:/{print $2}' /etc/mongod.conf 2>/dev/null | tail -n 1)
+  for p in / /var "${dbp:-/var/lib/mongodb}" "${cj:-/var/lib/graylog-server/journal}"; do
+    [[ -e $p ]] || continue
+    line=$(df -Ph "$p" 2>/dev/null | awk 'NR==2{print $6"|"$4"|"$5}')
+    [[ -n $line ]] || continue
+    IFS='|' read -r m a u <<<"$line"
+    [[ $seen == *" $m "* ]] && continue
+    seen+="$m "
+    say "$lead$m $a available ($u used)"; lead="               "
+  done
+}
+
 # ---- Main: scan screen
 build_pkgs() { PKGS=(graylog-server); HAS_DN=0; [[ -n $(pkgver graylog-datanode) ]] && { HAS_DN=1; PKGS+=(graylog-datanode); }; return 0; }
 
+STTY_SAVED=$(stty -g </dev/tty 2>/dev/null) || STTY_SAVED=""
+tty_quiet   # no echo of stray keystrokes while the tool is busy; prompts switch it back on
 pin_init || banner
 terms_gate
 set_phase Start
@@ -883,9 +920,9 @@ else
   warn "Graylog up to 7.1 supports OpenSearch up to 2.19.6. Elasticsearch and OpenSearch 1.x are deprecated from 7.0. Verify yours before each hop."
 fi
 say "Services:      $(systemctl is-active mongod "${PKGS[@]}" 2>&1 | tr '\n' ' ')(mongod ${PKGS[*]})"
-load_health_url
+load_health_url; status_refresh
 if alive; then say "lbstatus:      ${C_GRN}ALIVE${C_RST} ($HEALTH_URL)"; else warn "lbstatus is not ALIVE ($HEALTH_URL). Investigate first."; fi
-say "Disk free:"; df -h --output=target,avail,pcent / /var 2>/dev/null | awk '!seen[$0]++' | sed 's/^/                /'
+disk_free
 say "RAM:           $(free -h 2>/dev/null | awk 'NR==2{print "total "$2", used "$3", available "$7}')"
 precheck_config
 say "Pre-check 9 (opensearch_heap):  $(printf '%s\n' "${PRE7[@]:-}" | grep -c heap | sed 's/^0$/ok/;s/^[1-9].*/PROBLEM/')"
@@ -896,6 +933,7 @@ dpkg --compare-versions "$CUR_MINOR" ge 6.0 || die "Graylog $CUR_MINOR is older 
 SNAP=$(mktemp); listeners >"$SNAP"
 say "Listener snapshot: $(wc -l <"$SNAP") TCP/UDP listeners below port $EPH_LO."
 
+set_phase Scan
 info "Checking Graylog's repo index for the latest versions ..."
 discover_repo
 if (( ! ONLINE )); then warn "Could not reach the Graylog repo index (no internet?). Using the built-in table; exact versions resolve after each repo swap."; fi
@@ -929,7 +967,7 @@ while :; do
   say "  [3] Change target"
   say "  [4] Quit"
   printf '%sChoose 1-4%s [default %s2 = Preview%s, the safer first choice]: ' "$C_BOLD" "$C_RST" "$C_GRN" "$C_RST"
-  read -r ans </dev/tty || die "No terminal input."
+  read_tty ans || die "No terminal input."
   ans=${ans:-2}; printf 'PROMPT: menu -> %s\n' "$ans" >>"$LOG"
   case $ans in
     1|2) if (( ! ${#PLAN[@]} )); then say "Nothing to do for this target."; continue; fi
